@@ -9,13 +9,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
-
 COPY --from=builder /install /usr/local
 
 COPY config.py models.py main.py ./
-
-USER appuser
 
 EXPOSE 11434
 
