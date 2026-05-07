@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Pydantic models for Ollama-compatible API request and response payloads."""
+
 from typing import Optional
 from pydantic import BaseModel, model_validator
 
@@ -72,7 +74,7 @@ class ModelDetails(BaseModel):
     parent_model: str = ""
     format: str = "gguf"
     family: str = ""
-    families: Optional[list[str]] = None
+    families: list[str] = []
     parameter_size: str = ""
     quantization_level: str = ""
 
@@ -107,6 +109,7 @@ class ShowResponse(BaseModel):
     template: str = ""
     details: ModelDetails
     model_info: Optional[dict] = None
+    capabilities: list[str] = ["completion"]
 
 
 class PullRequest(BaseModel):

@@ -1,3 +1,5 @@
+"""FastAPI adapter that exposes vLLM endpoints through an Ollama-compatible API."""
+
 from __future__ import annotations
 
 import json
@@ -86,6 +88,7 @@ async def list_models():
         data = resp.json()
         models = []
         for m in data.get("data", []):
+            family = m["id"].split("/")[0] if "/" in m["id"] else m["id"]
             models.append(
                 ModelInfo(
                     name=m["id"],
@@ -96,7 +99,8 @@ async def list_models():
                     details=ModelDetails(
                         parent_model="",
                         format="gguf",
-                        family=m["id"].split("/")[0] if "/" in m["id"] else m["id"],
+                        family=family,
+                        families=[family],
                         parameter_size="unknown",
                         quantization_level="unknown",
                     ),
@@ -111,7 +115,12 @@ async def list_models():
             modified_at=_now_iso(),
             size=0,
             digest="sha256:0000000000000000",
-            details=ModelDetails(family=model_name, parameter_size="unknown", quantization_level="unknown"),
+            details=ModelDetails(
+                family=model_name,
+                families=[model_name],
+                parameter_size="unknown",
+                quantization_level="unknown",
+            ),
         )
         return TagsResponse(models=[fallback]).model_dump()
 
@@ -122,6 +131,8 @@ async def list_models():
 @app.post("/api/show")
 async def show_model(req: ShowRequest):
     model_name = _resolve_model(req.name)
+    # Use a simple lowercase architecture token so Copilot's .includes() checks work
+    arch = model_name.split("/")[-1].split("-")[0].lower() if model_name else "unknown"
     return ShowResponse(
         modelfile=f"FROM {model_name}",
         parameters="",
@@ -129,11 +140,20 @@ async def show_model(req: ShowRequest):
         details=ModelDetails(
             parent_model="",
             format="gguf",
-            family=model_name,
+            family=arch,
+            families=[arch],
             parameter_size="unknown",
             quantization_level="unknown",
         ),
-        model_info={"general.architecture": model_name},
+        model_info={
+            "general.architecture": arch,
+            "general.basename": model_name,
+            f"{arch}.context_length": 262144,
+            "general.file_type": 2,
+            "general.parameter_count": 0,
+            "general.quantization_version": 2,
+        },
+        capabilities=["completion", "tools"],
     ).model_dump()
 
 
