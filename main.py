@@ -393,7 +393,7 @@ async def show_model(req: ShowRequest):
             "general.parameter_count": 0,
             "general.quantization_version": 2,
         },
-        capabilities=["completion", "tools"],
+        capabilities=["completion", "tools","vision"],
         remote_model=upstream_model_name,
     ).model_dump()
 
