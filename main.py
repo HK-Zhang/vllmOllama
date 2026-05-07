@@ -53,6 +53,14 @@ UPSTREAM_OWNER = "vllm-ollama-adapter"
 
 
 class UpstreamProxyError(Exception):
+    """Raised when the upstream vLLM API returns an error or cannot be reached.
+
+    Attributes:
+        status_code: HTTP status code to return to the client (502/503 for proxy errors,
+            or the upstream status for other errors).
+        message: Human-readable error description.
+    """
+
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
         self.message = message
@@ -83,6 +91,7 @@ app = FastAPI(title="vLLM-to-Ollama Adapter", version=OLLAMA_VERSION, lifespan=l
 
 @app.exception_handler(UpstreamProxyError)
 async def handle_upstream_proxy_error(_: Request, exc: UpstreamProxyError):
+    """Handle UpstreamProxyError by returning a JSON error response."""
     return JSONResponse({"error": exc.message}, status_code=exc.status_code)
 
 
@@ -138,7 +147,9 @@ def _build_process_model(model_name: str) -> ProcessModelInfo:
     )
 
 
-def _build_openai_model_card(model_name: str, source: dict[str, Any] | None = None) -> dict[str, Any]:
+def _build_openai_model_card(
+    model_name: str, source: dict[str, Any] | None = None
+) -> dict[str, Any]:
     card = dict(source or {})
     card["id"] = model_name
     card.setdefault("object", "model")
@@ -166,7 +177,8 @@ def _normalize_openai_model_cards(data: dict[str, Any]) -> list[dict[str, Any]]:
     preferred_model = _resolve_public_model("")
 
     if preferred_model:
-        return [_build_openai_model_card(preferred_model, source_cards[0] if source_cards else None)]
+        first_source = source_cards[0] if source_cards else None
+        return [_build_openai_model_card(preferred_model, first_source)]
 
     cards: list[dict[str, Any]] = []
 
@@ -231,7 +243,9 @@ def _raise_response_error(response: httpx.Response) -> None:
     raise UpstreamProxyError(status_code, _extract_error_message(response))
 
 
-async def _request_upstream_json(method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _request_upstream_json(
+    method: str, path: str, json_body: dict[str, Any] | None = None
+) -> dict[str, Any]:
     try:
         response = await _http_client().request(method, path, json=json_body)
     except httpx.RequestError as exc:
@@ -246,7 +260,9 @@ async def _request_upstream_json(method: str, path: str, json_body: dict[str, An
         raise UpstreamProxyError(502, f"Upstream vLLM returned invalid JSON for {path}.") from exc
 
 
-async def _open_upstream_stream(method: str, path: str, json_body: dict[str, Any] | None = None) -> httpx.Response:
+async def _open_upstream_stream(
+    method: str, path: str, json_body: dict[str, Any] | None = None
+) -> httpx.Response:
     request = _http_client().build_request(method, path, json=json_body)
     try:
         response = await _http_client().send(request, stream=True)
@@ -278,8 +294,14 @@ def _extract_sse_payload(line: str) -> str | None:
     return line[5:].lstrip()
 
 
-def _extract_extra_fields(payload: dict[str, Any], excluded_keys: set[str]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if key not in excluded_keys and value is not None}
+def _extract_extra_fields(
+    payload: dict[str, Any], excluded_keys: set[str]
+) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in excluded_keys and value is not None
+    }
 
 
 def _message_from_payload(payload: dict[str, Any], default_role: str = "assistant") -> ChatMessage:
@@ -324,14 +346,17 @@ async def health():
 
 @app.get("/api/version")
 async def version():
+    """Return the current Ollama API version."""
     return JSONResponse({"version": OLLAMA_VERSION})
 
 
 @app.get("/api/tags")
 async def list_models():
+    """List available models (proxied to vLLM models endpoint)."""
     try:
         data = await _request_upstream_json("GET", MODELS_PATH)
-        models = [_build_model_info(str(card["id"])) for card in _normalize_openai_model_cards(data)]
+        cards = _normalize_openai_model_cards(data)
+        models = [_build_model_info(str(card["id"])) for card in cards]
     except UpstreamProxyError:
         models = [_build_model_info(_resolve_public_model("unknown"))]
     return TagsResponse(models=models).model_dump()
@@ -342,7 +367,8 @@ async def list_running_models():
     """List running models (proxied to vLLM models endpoint)."""
     try:
         data = await _request_upstream_json("GET", MODELS_PATH)
-        models = [_build_process_model(str(card["id"])) for card in _normalize_openai_model_cards(data)]
+        cards = _normalize_openai_model_cards(data)
+        models = [_build_process_model(str(card["id"])) for card in cards]
     except UpstreamProxyError:
         models = [_build_process_model(_resolve_public_model("unknown"))]
     return PsResponse(models=models).model_dump()
@@ -350,6 +376,7 @@ async def list_running_models():
 
 @app.post("/api/show")
 async def show_model(req: ShowRequest):
+    """Return metadata and details for a model."""
     public_model_name = _resolve_public_model(req.name)
     upstream_model_name = _resolve_model(req.name)
     arch = _model_family(public_model_name)
@@ -373,6 +400,7 @@ async def show_model(req: ShowRequest):
 
 @app.post("/api/pull")
 async def pull_model(req: PullRequest):
+    """Simulate pulling a model (no-op for vLLM proxy)."""
     if req.stream:
 
         async def _stream():
@@ -385,6 +413,7 @@ async def pull_model(req: PullRequest):
 
 @app.post("/api/generate")
 async def generate(req: GenerateRequest):
+    """Generate a completion for the given prompt."""
     public_model = _resolve_public_model(req.model)
     model = _resolve_model(req.model)
     params = _extract_options(req.options)
@@ -403,8 +432,12 @@ async def generate(req: GenerateRequest):
     }
 
     if req.stream:
-        response = await _open_upstream_stream("POST", COMPLETIONS_PATH, json_body=payload)
-        return StreamingResponse(_stream_generate(response, public_model), media_type=NDJSON_MEDIA_TYPE)
+        response = await _open_upstream_stream(
+            "POST", COMPLETIONS_PATH, json_body=payload
+        )
+        return StreamingResponse(
+            _stream_generate(response, public_model), media_type=NDJSON_MEDIA_TYPE
+        )
 
     data = await _request_upstream_json("POST", COMPLETIONS_PATH, json_body=payload)
 
@@ -424,6 +457,7 @@ async def generate(req: GenerateRequest):
 
 
 async def _stream_generate(response: httpx.Response, model: str):
+    """Stream generate responses from an upstream SSE response."""
     finish_reason: str | None = None
     async for line in _iter_sse_lines(response):
         payload = _extract_sse_payload(line)
@@ -438,15 +472,24 @@ async def _stream_generate(response: httpx.Response, model: str):
         finish_reason = choice.get("finish_reason") or finish_reason
 
         if text:
-            out = GenerateResponse(model=model, created_at=_now_iso(), response=text, done=False)
+            out = GenerateResponse(
+                model=model, created_at=_now_iso(), response=text, done=False
+            )
             yield json.dumps(out.model_dump(exclude_none=True)) + "\n"
 
-    final = GenerateResponse(model=model, created_at=_now_iso(), response="", done=True, done_reason=finish_reason)
+    final = GenerateResponse(
+        model=model,
+        created_at=_now_iso(),
+        response="",
+        done=True,
+        done_reason=finish_reason,
+    )
     yield json.dumps(final.model_dump()) + "\n"
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
+    """Generate a chat completion for the given messages."""
     public_model = _resolve_public_model(req.model)
     model = _resolve_model(req.model)
     params = _extract_options(req.options)
@@ -483,6 +526,7 @@ async def chat(req: ChatRequest):
 
 
 async def _stream_chat(response: httpx.Response, model: str):
+    """Stream chat responses from an upstream SSE response."""
     finish_reason: str | None = None
     async for line in _iter_sse_lines(response):
         payload = _extract_sse_payload(line)
@@ -518,6 +562,7 @@ async def _stream_chat(response: httpx.Response, model: str):
 @app.post("/api/embeddings")
 @app.post("/api/embed")
 async def embeddings(req: EmbeddingsRequest):
+    """Generate embeddings for the given input text."""
     model = _resolve_model(req.model)
     input_text = req.prompt or req.input or ""
 
@@ -538,6 +583,7 @@ async def embeddings(req: EmbeddingsRequest):
 
 @app.post("/v1/chat/completions")
 async def openai_chat_passthrough(request: Request):
+    """Proxy OpenAI-compatible chat completions to vLLM."""
     body = await request.json()
     body["model"] = _resolve_model(body.get("model", ""))
     stream = body.get("stream", False)
@@ -556,6 +602,7 @@ async def openai_chat_passthrough(request: Request):
 
 @app.post("/v1/completions")
 async def openai_completions_passthrough(request: Request):
+    """Proxy OpenAI-compatible completions to vLLM."""
     body = await request.json()
     body["model"] = _resolve_model(body.get("model", ""))
     stream = body.get("stream", False)
@@ -574,6 +621,7 @@ async def openai_completions_passthrough(request: Request):
 
 @app.post("/v1/embeddings")
 async def openai_embeddings_passthrough(request: Request):
+    """Proxy OpenAI-compatible embeddings to vLLM."""
     body = await request.json()
     body["model"] = _resolve_model(body.get("model", ""))
     return JSONResponse(await _request_upstream_json("POST", EMBEDDINGS_PATH, json_body=body))
@@ -581,6 +629,7 @@ async def openai_embeddings_passthrough(request: Request):
 
 @app.get("/v1/models")
 async def openai_models_passthrough():
+    """Proxy OpenAI-compatible models list to vLLM."""
     try:
         data = await _request_upstream_json("GET", MODELS_PATH)
         payload = {

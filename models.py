@@ -7,10 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CompatibleBaseModel(BaseModel):
+    """Base model that allows extra fields for compatibility."""
+
     model_config = ConfigDict(extra="allow")
 
 
 class GenerateRequest(CompatibleBaseModel):
+    """Request payload for the /api/generate endpoint."""
+
     model: str = ""
     prompt: str
     system: Optional[str] = None
@@ -23,6 +27,8 @@ class GenerateRequest(CompatibleBaseModel):
 
 
 class GenerateResponse(CompatibleBaseModel):
+    """Response payload for the /api/generate endpoint."""
+
     model: str
     created_at: str
     response: str
@@ -38,12 +44,16 @@ class GenerateResponse(CompatibleBaseModel):
 
 
 class ChatMessage(CompatibleBaseModel):
+    """A single message in a chat conversation."""
+
     role: str
     content: Optional[str] = None
     images: Optional[list[str]] = None
 
 
 class ChatRequest(CompatibleBaseModel):
+    """Request payload for the /api/chat endpoint."""
+
     model: str = ""
     messages: list[ChatMessage]
     stream: bool = True
@@ -52,6 +62,8 @@ class ChatRequest(CompatibleBaseModel):
 
 
 class ChatResponse(CompatibleBaseModel):
+    """Response payload for the /api/chat endpoint."""
+
     model: str
     created_at: str
     message: Optional[ChatMessage] = None
@@ -66,17 +78,23 @@ class ChatResponse(CompatibleBaseModel):
 
 
 class EmbeddingsRequest(CompatibleBaseModel):
+    """Request payload for the /api/embeddings endpoint."""
+
     model: str = ""
     prompt: Optional[str] = None
     input: Optional[str | list[str]] = None
 
 
 class EmbeddingsResponse(CompatibleBaseModel):
+    """Response payload for the /api/embeddings endpoint."""
+
     embedding: Optional[list[float]] = None
     embeddings: Optional[list[list[float]]] = None
 
 
 class ModelDetails(BaseModel):
+    """Detailed metadata about a model."""
+
     parent_model: str = ""
     format: str = "gguf"
     family: str = ""
@@ -86,6 +104,8 @@ class ModelDetails(BaseModel):
 
 
 class ModelInfo(BaseModel):
+    """Information about a single model for listing endpoints."""
+
     name: str
     model: str
     modified_at: str
@@ -95,10 +115,14 @@ class ModelInfo(BaseModel):
 
 
 class TagsResponse(BaseModel):
+    """Response payload for the /api/tags endpoint."""
+
     models: list[ModelInfo]
 
 
 class ProcessModelInfo(BaseModel):
+    """Information about a running model for the /api/ps endpoint."""
+
     name: str
     model: str
     size: int
@@ -110,10 +134,14 @@ class ProcessModelInfo(BaseModel):
 
 
 class PsResponse(BaseModel):
+    """Response payload for the /api/ps endpoint."""
+
     models: list[ProcessModelInfo]
 
 
 class ShowRequest(CompatibleBaseModel):
+    """Request payload for the /api/show endpoint."""
+
     name: Optional[str] = None
     model: Optional[str] = None
     verbose: Optional[bool] = False
@@ -125,6 +153,8 @@ class ShowRequest(CompatibleBaseModel):
 
 
 class ShowResponse(CompatibleBaseModel):
+    """Response payload for the /api/show endpoint."""
+
     modelfile: str = ""
     parameters: str = ""
     template: str = ""
@@ -134,12 +164,16 @@ class ShowResponse(CompatibleBaseModel):
 
 
 class PullRequest(CompatibleBaseModel):
+    """Request payload for the /api/pull endpoint."""
+
     name: str
     insecure: bool = False
     stream: bool = True
 
 
 class PullResponse(CompatibleBaseModel):
+    """Response payload for the /api/pull endpoint."""
+
     status: str
     digest: Optional[str] = None
     total: Optional[int] = None
