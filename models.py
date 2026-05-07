@@ -1,13 +1,17 @@
-from __future__ import annotations
-
 """Pydantic models for Ollama-compatible API request and response payloads."""
 
+from __future__ import annotations
+
 from typing import Optional
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class GenerateRequest(BaseModel):
-    model: str
+class CompatibleBaseModel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class GenerateRequest(CompatibleBaseModel):
+    model: str = ""
     prompt: str
     system: Optional[str] = None
     template: Optional[str] = None
@@ -18,11 +22,12 @@ class GenerateRequest(BaseModel):
     keep_alive: Optional[str] = None
 
 
-class GenerateResponse(BaseModel):
+class GenerateResponse(CompatibleBaseModel):
     model: str
     created_at: str
     response: str
     done: bool
+    done_reason: Optional[str] = None
     context: Optional[list[int]] = None
     total_duration: Optional[int] = None
     load_duration: Optional[int] = None
@@ -32,25 +37,26 @@ class GenerateResponse(BaseModel):
     eval_duration: Optional[int] = None
 
 
-class ChatMessage(BaseModel):
+class ChatMessage(CompatibleBaseModel):
     role: str
-    content: str
+    content: Optional[str] = None
     images: Optional[list[str]] = None
 
 
-class ChatRequest(BaseModel):
-    model: str
+class ChatRequest(CompatibleBaseModel):
+    model: str = ""
     messages: list[ChatMessage]
     stream: bool = True
     options: Optional[dict] = None
     keep_alive: Optional[str] = None
 
 
-class ChatResponse(BaseModel):
+class ChatResponse(CompatibleBaseModel):
     model: str
     created_at: str
     message: Optional[ChatMessage] = None
     done: bool
+    done_reason: Optional[str] = None
     total_duration: Optional[int] = None
     load_duration: Optional[int] = None
     prompt_eval_count: Optional[int] = None
@@ -59,13 +65,13 @@ class ChatResponse(BaseModel):
     eval_duration: Optional[int] = None
 
 
-class EmbeddingsRequest(BaseModel):
-    model: str
+class EmbeddingsRequest(CompatibleBaseModel):
+    model: str = ""
     prompt: Optional[str] = None
     input: Optional[str | list[str]] = None
 
 
-class EmbeddingsResponse(BaseModel):
+class EmbeddingsResponse(CompatibleBaseModel):
     embedding: Optional[list[float]] = None
     embeddings: Optional[list[list[float]]] = None
 
@@ -74,7 +80,7 @@ class ModelDetails(BaseModel):
     parent_model: str = ""
     format: str = "gguf"
     family: str = ""
-    families: list[str] = []
+    families: list[str] = Field(default_factory=list)
     parameter_size: str = ""
     quantization_level: str = ""
 
@@ -92,7 +98,22 @@ class TagsResponse(BaseModel):
     models: list[ModelInfo]
 
 
-class ShowRequest(BaseModel):
+class ProcessModelInfo(BaseModel):
+    name: str
+    model: str
+    size: int
+    digest: str
+    details: ModelDetails
+    context_length: int
+    expires_at: str
+    size_vram: int = 0
+
+
+class PsResponse(BaseModel):
+    models: list[ProcessModelInfo]
+
+
+class ShowRequest(CompatibleBaseModel):
     name: Optional[str] = None
     model: Optional[str] = None
     verbose: Optional[bool] = False
@@ -103,22 +124,22 @@ class ShowRequest(BaseModel):
         return self
 
 
-class ShowResponse(BaseModel):
+class ShowResponse(CompatibleBaseModel):
     modelfile: str = ""
     parameters: str = ""
     template: str = ""
     details: ModelDetails
     model_info: Optional[dict] = None
-    capabilities: list[str] = ["completion"]
+    capabilities: list[str] = Field(default_factory=lambda: ["completion"])
 
 
-class PullRequest(BaseModel):
+class PullRequest(CompatibleBaseModel):
     name: str
     insecure: bool = False
     stream: bool = True
 
 
-class PullResponse(BaseModel):
+class PullResponse(CompatibleBaseModel):
     status: str
     digest: Optional[str] = None
     total: Optional[int] = None

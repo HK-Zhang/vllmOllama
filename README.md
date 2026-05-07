@@ -1,10 +1,20 @@
 # vLLM-to-Ollama Adapter
 
-A lightweight FastAPI adapter that exposes a vLLM service as an Ollama-compatible API. Designed for use with GitHub Copilot and other tools that consume the Ollama protocol.
+A lightweight FastAPI adapter that exposes a vLLM service as an Ollama-compatible API. It is designed for GitHub Copilot and other clients that expect either the Ollama API surface or OpenAI-compatible endpoints.
+
+## What improved for GitHub Copilot
+
+- Preserves extra chat and completion fields instead of dropping them, which improves compatibility with Copilot features that send OpenAI-style options such as `tools`, `tool_choice`, or message metadata.
+- Normalizes model discovery so the configured `VLLM_MODEL_NAME` is exposed consistently through both `/api/tags` and `/v1/models`.
+- Adds `/api/ps` and `/v1/embeddings`, which closes common discovery and embeddings gaps for Ollama-style and OpenAI-style clients.
+- Exposes the configured context length through both `/api/show` and `/api/ps`, which helps clients avoid falling back to conservative defaults such as ~32K.
+- Supports a public model alias that is separate from the upstream vLLM model ID, which helps when Copilot caches Ollama model metadata by model name.
+- Returns cleaner upstream failures instead of raw FastAPI stack traces when vLLM is unavailable or returns an error.
+- Supports upstream bearer authentication and a configurable upstream timeout.
 
 ## Architecture
 
-```
+```text
 GitHub Copilot / Client
         │
         ▼
@@ -43,9 +53,14 @@ docker run -p 11434:11434 \
 ## Configuration
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| -------- | ------- | ----------- |
 | `VLLM_BASE_URL` | `http://localhost:8000` | vLLM server base URL |
-| `VLLM_MODEL_NAME` | `default-model` | Model name served by vLLM |
+| `VLLM_MODEL_NAME` | empty | Upstream vLLM model ID used for proxied requests |
+| `ADAPTER_EXPOSED_MODEL_NAME` | empty | Optional public model name exposed to Copilot and other clients |
+| `VLLM_API_KEY` | empty | Optional bearer token forwarded to the upstream vLLM server |
+| `VLLM_REQUEST_TIMEOUT` | `120` | Timeout in seconds for upstream vLLM requests |
+| `ADAPTER_MODEL_ARCHITECTURE` | empty | Optional override for the Ollama architecture token reported in `/api/show` |
+| `ADAPTER_MODEL_CONTEXT_LENGTH` | `262144` | Context length reported to Ollama-compatible clients |
 | `ADAPTER_HOST` | `0.0.0.0` | Adapter listen address |
 | `ADAPTER_PORT` | `11434` | Adapter listen port (Ollama default) |
 
@@ -72,7 +87,7 @@ Returns the emulated Ollama version.
 **Response:**
 
 ```json
-{"version": "0.6.2"}
+{"version": "0.6.4"}
 ```
 
 ---
@@ -80,6 +95,8 @@ Returns the emulated Ollama version.
 #### `GET /api/tags`
 
 List available models. Queries the vLLM `/v1/models` endpoint and returns results in Ollama format.
+
+If `ADAPTER_EXPOSED_MODEL_NAME` is set, the adapter exposes only that public model name. This is useful for forcing Copilot to register a fresh model entry after metadata changes.
 
 **Response:**
 
@@ -130,6 +147,38 @@ Show model information.
     "parameter_size": "unknown",
     "quantization_level": "unknown"
   }
+}
+```
+
+---
+
+#### `GET /api/ps`
+
+List models that appear loaded from the adapter's perspective. This improves compatibility with clients that probe Ollama's running-models endpoint before starting a chat.
+
+**Response:**
+
+```json
+{
+  "models": [
+    {
+      "name": "my-model",
+      "model": "my-model",
+      "size": 0,
+      "digest": "sha256:0000000000000000",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "my",
+        "families": ["my"],
+        "parameter_size": "unknown",
+        "quantization_level": "unknown"
+      },
+      "context_length": 262144,
+      "expires_at": "2026-01-01T00:00:00.000000Z",
+      "size_vram": 0
+    }
+  ]
 }
 ```
 
@@ -192,6 +241,8 @@ Generate a text completion. Supports streaming (NDJSON) and non-streaming modes.
 
 Chat completion with message history. Supports streaming (NDJSON) and non-streaming modes.
 
+Extra request fields are forwarded upstream, so OpenAI-style Copilot options such as `tools`, `tool_choice`, `response_format`, and extra message fields can pass through instead of being discarded.
+
 **Request body:**
 
 ```json
@@ -246,9 +297,10 @@ Generate embeddings for text input.
 These endpoints proxy directly to the vLLM server, providing compatibility with clients that use the OpenAI API format (including GitHub Copilot's OpenAI mode).
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
+| -------- | ------ | ----------- |
 | `/v1/chat/completions` | POST | Chat completions (streaming supported) |
 | `/v1/completions` | POST | Text completions (streaming supported) |
+| `/v1/embeddings` | POST | Embeddings passthrough |
 | `/v1/models` | GET | List models |
 
 ---
@@ -258,7 +310,7 @@ These endpoints proxy directly to the vLLM server, providing compatibility with 
 Ollama `options` fields are mapped to OpenAI-compatible parameters:
 
 | Ollama Option | OpenAI Parameter |
-|---------------|------------------|
+| ------------- | ---------------- |
 | `temperature` | `temperature` |
 | `top_p` | `top_p` |
 | `top_k` | `top_k` |
@@ -274,8 +326,37 @@ Ollama `options` fields are mapped to OpenAI-compatible parameters:
 Configure GitHub Copilot to use this adapter as an Ollama endpoint:
 
 1. Start the adapter pointing at your vLLM server.
-2. In VS Code settings, configure the Ollama endpoint URL to `http://localhost:11434`.
-3. The adapter exposes both Ollama-native and OpenAI-compatible endpoints, so it works regardless of which protocol Copilot uses.
+2. Set `VLLM_MODEL_NAME` to the real upstream vLLM model ID.
+3. If you want Copilot to see a friendlier name or force a fresh registration, set `ADAPTER_EXPOSED_MODEL_NAME`.
+4. If Copilot still shows the wrong context window, set `ADAPTER_MODEL_ARCHITECTURE` to the exact Ollama architecture token for your model and `ADAPTER_MODEL_CONTEXT_LENGTH` to the real value.
+5. In VS Code settings, configure the Ollama endpoint URL to `http://localhost:11434`.
+6. Reload the VS Code window after changing the exposed model name or context metadata so Copilot drops any stale cached Ollama model info.
+7. The adapter exposes both Ollama-native and OpenAI-compatible endpoints, so it works whether Copilot probes Ollama routes, OpenAI routes, or both.
+
+### Recommended `.env` for Copilot
+
+```env
+VLLM_BASE_URL=http://localhost:8000
+VLLM_MODEL_NAME=my-model
+# Optional public alias for clients such as Copilot
+ADAPTER_EXPOSED_MODEL_NAME=my-model-262k
+# Optional when your upstream vLLM server requires auth
+VLLM_API_KEY=
+# Optional when prompts or context windows are large
+VLLM_REQUEST_TIMEOUT=120
+# Optional when the model name does not imply the right Ollama architecture token
+ADAPTER_MODEL_ARCHITECTURE=llama
+ADAPTER_MODEL_CONTEXT_LENGTH=262144
+ADAPTER_HOST=0.0.0.0
+ADAPTER_PORT=11434
+```
+
+### Limitations
+
+- Ollama metadata such as quantization, file type, and parameter count is synthetic because vLLM does not expose equivalent details in the same shape.
+- If `ADAPTER_MODEL_ARCHITECTURE` is left empty, the adapter derives an architecture token from the model name. For unusual model names, that heuristic may be too loose for client-specific metadata parsing.
+- VS Code's Copilot Ollama provider fetches `/api/tags` first and then usually calls `/api/show` per model, but it also caches model info by base URL and model ID during the session. If you only see `/api/tags`, you may be hitting the cache.
+- The adapter forwards tool-related request fields and tool-call responses, but model-side tool behavior still depends on what the upstream vLLM model actually supports.
 
 ## Development
 
