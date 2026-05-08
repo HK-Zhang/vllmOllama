@@ -304,6 +304,47 @@ def _extract_extra_fields(
     }
 
 
+def _extract_ollama_metrics(payload: dict[str, Any]) -> dict[str, int]:
+    metrics: dict[str, int] = {}
+
+    for field in (
+        "total_duration",
+        "load_duration",
+        "prompt_eval_count",
+        "prompt_eval_duration",
+        "eval_count",
+        "eval_duration",
+    ):
+        value = payload.get(field)
+        if isinstance(value, int):
+            metrics[field] = value
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        if isinstance(prompt_tokens, int):
+            metrics.setdefault("prompt_eval_count", prompt_tokens)
+        if isinstance(completion_tokens, int):
+            metrics.setdefault("eval_count", completion_tokens)
+
+    return metrics
+
+
+def _with_stream_usage(payload: dict[str, Any]) -> dict[str, Any]:
+    stream_options = payload.get("stream_options")
+    if isinstance(stream_options, dict):
+        payload["stream_options"] = {**stream_options, "include_usage": True}
+    else:
+        payload["stream_options"] = {"include_usage": True}
+    return payload
+
+
+def _supports_stream_usage_error(message: str) -> bool:
+    lowered = message.lower()
+    return "stream_options" in lowered or "include_usage" in lowered
+
+
 def _message_from_payload(payload: dict[str, Any], default_role: str = "assistant") -> ChatMessage:
     message = {
         "role": payload.get("role") or default_role,
@@ -432,9 +473,17 @@ async def generate(req: GenerateRequest):
     }
 
     if req.stream:
-        response = await _open_upstream_stream(
-            "POST", COMPLETIONS_PATH, json_body=payload
-        )
+        usage_payload = _with_stream_usage(dict(payload))
+        try:
+            response = await _open_upstream_stream(
+                "POST", COMPLETIONS_PATH, json_body=usage_payload
+            )
+        except UpstreamProxyError as exc:
+            if not _supports_stream_usage_error(exc.message):
+                raise
+            response = await _open_upstream_stream(
+                "POST", COMPLETIONS_PATH, json_body=payload
+            )
         return StreamingResponse(
             _stream_generate(response, public_model), media_type=NDJSON_MEDIA_TYPE
         )
@@ -442,8 +491,8 @@ async def generate(req: GenerateRequest):
     data = await _request_upstream_json("POST", COMPLETIONS_PATH, json_body=payload)
 
     text = data["choices"][0]["text"]
-    usage = data.get("usage", {})
     finish_reason = data["choices"][0].get("finish_reason")
+    metrics = _extract_ollama_metrics(data)
 
     return GenerateResponse(
         model=public_model,
@@ -451,14 +500,14 @@ async def generate(req: GenerateRequest):
         response=text,
         done=True,
         done_reason=finish_reason,
-        prompt_eval_count=usage.get("prompt_tokens"),
-        eval_count=usage.get("completion_tokens"),
+        **metrics,
     ).model_dump()
 
 
 async def _stream_generate(response: httpx.Response, model: str):
     """Stream generate responses from an upstream SSE response."""
     finish_reason: str | None = None
+    metrics: dict[str, int] = {}
     async for line in _iter_sse_lines(response):
         payload = _extract_sse_payload(line)
         if payload is None:
@@ -467,13 +516,20 @@ async def _stream_generate(response: httpx.Response, model: str):
             break
 
         chunk = json.loads(payload)
-        choice = chunk["choices"][0]
+        metrics.update(_extract_ollama_metrics(chunk))
+
+        choices = chunk.get("choices") or []
+        choice = choices[0] if choices else {}
         text = choice.get("text", "")
         finish_reason = choice.get("finish_reason") or finish_reason
 
         if text:
             out = GenerateResponse(
-                model=model, created_at=_now_iso(), response=text, done=False
+                model=model,
+                created_at=_now_iso(),
+                response=text,
+                done=False,
+                **metrics,
             )
             yield json.dumps(out.model_dump(exclude_none=True)) + "\n"
 
@@ -483,6 +539,7 @@ async def _stream_generate(response: httpx.Response, model: str):
         response="",
         done=True,
         done_reason=finish_reason,
+        **metrics,
     )
     yield json.dumps(final.model_dump()) + "\n"
 
@@ -505,14 +562,24 @@ async def chat(req: ChatRequest):
     }
 
     if req.stream:
-        response = await _open_upstream_stream("POST", CHAT_COMPLETIONS_PATH, json_body=payload)
+        usage_payload = _with_stream_usage(dict(payload))
+        try:
+            response = await _open_upstream_stream(
+                "POST", CHAT_COMPLETIONS_PATH, json_body=usage_payload
+            )
+        except UpstreamProxyError as exc:
+            if not _supports_stream_usage_error(exc.message):
+                raise
+            response = await _open_upstream_stream(
+                "POST", CHAT_COMPLETIONS_PATH, json_body=payload
+            )
         return StreamingResponse(_stream_chat(response, public_model), media_type=NDJSON_MEDIA_TYPE)
 
     data = await _request_upstream_json("POST", CHAT_COMPLETIONS_PATH, json_body=payload)
 
     choice = data["choices"][0]
     msg = choice["message"]
-    usage = data.get("usage", {})
+    metrics = _extract_ollama_metrics(data)
 
     return ChatResponse(
         model=public_model,
@@ -520,14 +587,14 @@ async def chat(req: ChatRequest):
         message=_message_from_payload(msg),
         done=True,
         done_reason=choice.get("finish_reason"),
-        prompt_eval_count=usage.get("prompt_tokens"),
-        eval_count=usage.get("completion_tokens"),
+        **metrics,
     ).model_dump()
 
 
 async def _stream_chat(response: httpx.Response, model: str):
     """Stream chat responses from an upstream SSE response."""
     finish_reason: str | None = None
+    metrics: dict[str, int] = {}
     async for line in _iter_sse_lines(response):
         payload = _extract_sse_payload(line)
         if payload is None:
@@ -536,7 +603,10 @@ async def _stream_chat(response: httpx.Response, model: str):
             break
 
         chunk = json.loads(payload)
-        choice = chunk["choices"][0]
+        metrics.update(_extract_ollama_metrics(chunk))
+
+        choices = chunk.get("choices") or []
+        choice = choices[0] if choices else {}
         delta = choice.get("delta", {})
         finish_reason = choice.get("finish_reason") or finish_reason
 
@@ -546,6 +616,7 @@ async def _stream_chat(response: httpx.Response, model: str):
                 created_at=_now_iso(),
                 message=_message_from_payload(delta),
                 done=False,
+                **metrics,
             )
             yield json.dumps(out.model_dump(exclude_none=True)) + "\n"
 
@@ -555,6 +626,7 @@ async def _stream_chat(response: httpx.Response, model: str):
         message=ChatMessage(role="assistant"),
         done=True,
         done_reason=finish_reason,
+        **metrics,
     )
     yield json.dumps(final.model_dump()) + "\n"
 

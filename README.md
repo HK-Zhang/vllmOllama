@@ -9,6 +9,7 @@ A lightweight FastAPI adapter that exposes a vLLM service as an Ollama-compatibl
 - Adds `/api/ps` and `/v1/embeddings`, which closes common discovery and embeddings gaps for Ollama-style and OpenAI-style clients.
 - Exposes the configured context length through both `/api/show` and `/api/ps`, which helps clients avoid falling back to conservative defaults such as ~32K.
 - Supports a public model alias that is separate from the upstream vLLM model ID, which helps when Copilot caches Ollama model metadata by model name.
+- Returns token usage for non-streaming calls and includes usage metrics in the final Ollama-style streaming chunk when the upstream stream provides them.
 - Returns cleaner upstream failures instead of raw FastAPI stack traces when vLLM is unavailable or returns an error.
 - Supports upstream bearer authentication and a configurable upstream timeout.
 
@@ -235,6 +236,8 @@ Generate a text completion. Supports streaming (NDJSON) and non-streaming modes.
 
 **Response (streaming):** Newline-delimited JSON objects with `done: false` until the final object with `done: true`.
 
+The final streaming object includes token usage metrics such as `prompt_eval_count` and `eval_count` when the upstream vLLM stream provides usage data.
+
 ---
 
 #### `POST /api/chat`
@@ -271,6 +274,8 @@ Extra request fields are forwarded upstream, so OpenAI-style Copilot options suc
   "eval_count": 8
 }
 ```
+
+**Response (streaming):** The final streamed JSON object includes `prompt_eval_count` and `eval_count` when the upstream stream provides usage data.
 
 ---
 
